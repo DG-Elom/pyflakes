@@ -1,7 +1,8 @@
 import ast
+import sys
 
 from pyflakes import messages as m, checker
-from pyflakes.test.harness import TestCase, skip
+from pyflakes.test.harness import TestCase, skip, skipIf
 
 
 class Test(TestCase):
@@ -753,6 +754,161 @@ class Test(TestCase):
 
             Z = (x for x in (a for a in T))
         ''')
+
+    def test_undefinedInClassComprehension(self):
+        """
+        Names bound in a class body are not visible from the body of a
+        comprehension: only the outermost iterable is evaluated in the class
+        scope.
+        """
+        self.flakes('''
+        class A:
+            a = [1, 2, 3]
+            b = [1, 2, 3]
+            c = [i * j for i in a for j in b]
+        ''', m.UndefinedName)
+        self.flakes('''
+        class A:
+            x = 1
+            a = [x for i in range(2)]
+        ''', m.UndefinedName)
+        self.flakes('''
+        class A:
+            x = 1
+            a = [i for i in range(2) if x]
+        ''', m.UndefinedName)
+        self.flakes('''
+        class A:
+            x = 1
+            a = {i: x for i in range(2)}
+            b = {x for i in range(2)}
+            c = list(x for i in range(2))
+        ''', m.UndefinedName, m.UndefinedName, m.UndefinedName)
+
+    def test_undefinedInClassComprehensionNested(self):
+        """
+        Only the outermost iterable of the outermost comprehension is
+        evaluated in the class scope.
+        """
+        self.flakes('''
+        class A:
+            a = [1]
+            b = [1]
+            c = [[y for y in b] for x in a]
+        ''', m.UndefinedName)
+        self.flakes('''
+        class A:
+            x = 1
+            a = [i for i in range(2) if [x for _ in range(1)]]
+        ''', m.UndefinedName)
+
+    def test_undefinedInClassLambda(self):
+        self.flakes('''
+        class A:
+            x = 1
+            f = lambda: x
+            a = [(lambda: x)() for i in range(1)]
+        ''', m.UndefinedName, m.UndefinedName)
+
+    def test_undefinedInClassComprehensionWalrus(self):
+        self.flakes('''
+        class A:
+            (x := 1)
+            a = [x for i in range(2)]
+        ''', m.UndefinedName)
+
+    def test_undefinedInClassComprehensionNestedClass(self):
+        self.flakes('''
+        class A:
+            x = 1
+            class B:
+                y = [x for i in range(1)]
+        ''', m.UndefinedName)
+
+    def test_definedInClassComprehensionOuterIterable(self):
+        """The outermost iterable is evaluated in the class scope."""
+        self.flakes('''
+        class A:
+            a = [1, 2, 3]
+            c = [i for i in a]
+            d = [[y for y in x] for x in [a]]
+            e = {i: j for i, j in zip(a, a)}
+            f = list(i for i in a)
+        ''')
+
+    def test_definedInClassComprehensionOtherScope(self):
+        """
+        A name shadowed by the class scope is still found in an enclosing
+        module or function scope.
+        """
+        self.flakes('''
+        x = 1
+        class A:
+            x = 2
+            a = [x for i in range(2)]
+        ''')
+        self.flakes('''
+        def f():
+            x = 1
+            class A:
+                x = 2
+                a = [x for i in range(2)]
+            return A
+        ''')
+
+    def test_definedInClassComprehensionGlobal(self):
+        self.flakes('''
+        class A:
+            global g
+            g = 1
+            a = [g for i in range(2)]
+        ''')
+
+    def test_definedInClassComprehensionNonlocal(self):
+        self.flakes('''
+        def f():
+            n = 0
+            class A:
+                nonlocal n
+                n = 1
+                a = [n for i in range(2)]
+            return A
+        ''')
+
+    def test_comprehensionInMethodOfClass(self):
+        """A comprehension in a method sees the method's variables only."""
+        self.flakes('''
+        class A:
+            def f(self, y):
+                return [y + i for i in range(2)]
+        ''')
+        self.flakes('''
+        class A:
+            x = 1
+            def f(self):
+                return [x for i in range(2)]
+        ''', m.UndefinedName)
+
+    def test_definedInClassAnnotations(self):
+        self.flakes('''
+        class A:
+            x = int
+            a: x = 1
+            b: list[x] = []
+        ''')
+
+    @skipIf(sys.version_info < (3, 12), 'new in Python 3.12')
+    def test_classComprehensionTypeParams(self):  # pragma: >=3.12 cover
+        self.flakes('''
+        class A[T]:
+            x = 1
+            a = [T for i in range(1)]
+        ''')
+        self.flakes('''
+        class A[T]:
+            x = 1
+            a = [x for i in range(1)]
+        ''', m.UndefinedName)
 
     def test_undefinedInLoop(self):
         """
